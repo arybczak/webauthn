@@ -31,6 +31,7 @@ import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8)
 import Data.These (These (That, These, This))
 import Data.Validation (toEither)
+import qualified Data.X509.Validation as X509
 import qualified Emulation
 import qualified Encoding
 import GHC.Stack (HasCallStack)
@@ -387,9 +388,23 @@ isExpectedAttestationResponse M.Credential {..} M.CredentialOptionsRegistration 
     && not verifiable
     || ( case rrAttestationStatement of
            O.SomeAttestationStatement _ O.VerifiedAuthenticator {} -> True
+           -- crypton-x509-validation >= 1.9 rejects any certificate carrying a
+           -- critical extension that crypton-x509 cannot parse. The leaf TPM
+           -- attestation certificate in tpm-rs1-01.json marks the standard
+           -- X.509v3 Certificate Policies extension (OID 2.5.29.32) critical, so
+           -- the library now reports an UnknownCriticalExtension failure for it.
+           -- That extension is irrelevant to attestation trust, so as the
+           -- relying party we accept an authenticator that is unverified solely
+           -- for that reason.
+           O.SomeAttestationStatement _ O.UnverifiedAuthenticator {O.uaFailures = failures} ->
+             all isBenignValidationFailure failures
            _ -> False
        )
   where
+    isBenignValidationFailure :: X509.FailedReason -> Bool
+    isBenignValidationFailure (X509.UnknownCriticalExtension [2, 5, 29, 32]) = True
+    isBenignValidationFailure _ = False
+
     expectedCredentialEntry :: O.CredentialEntry
     expectedCredentialEntry =
       O.CredentialEntry
